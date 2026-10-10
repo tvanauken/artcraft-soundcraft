@@ -3414,6 +3414,7 @@ dependencies = [
 name = "soundcraft"
 version = "0.5.0"
 dependencies = [
+ "arboard",
  "eframe",
  "egui",
  "log",

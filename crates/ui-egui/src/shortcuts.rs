@@ -59,10 +59,15 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
         return;
     }
     let events: Vec<(Key, Modifiers)> = ctx.input(|i| {
+        // The desktop sends Cmd+X/C/V (and Windows' Shift+Delete, Ctrl+Insert, Shift+Insert) only as clipboard events; the web sends keys too.
+        let clipboard = |key| (!cfg!(target_arch = "wasm32")).then_some((key, if i.modifiers.command { i.modifiers } else { Modifiers::COMMAND }));
         i.events
             .iter()
             .filter_map(|e| match e {
                 egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => Some((*key, *modifiers)),
+                egui::Event::Cut => clipboard(Key::X),
+                egui::Event::Copy => clipboard(Key::C),
+                egui::Event::Paste(_) => clipboard(Key::V),
                 _ => None,
             })
             .collect()

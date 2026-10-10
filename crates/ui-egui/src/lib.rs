@@ -157,9 +157,10 @@ impl Default for UiState {
     }
 }
 
-/// Host services (file dialogs) injected by the app; absent in tests and on the web.
+/// Host services (file dialogs, clipboard) injected by the app; absent in tests and on the web.
 #[derive(Default)]
 pub struct Services {
+    pub clipboard_has_text: Option<Box<dyn Fn() -> bool>>,
     pub pick_open: Option<Box<dyn Fn(&str, &[&str]) -> Option<String>>>,
     pub pick_save: Option<Box<dyn Fn(&str, &str) -> Option<String>>>,
 }
@@ -240,6 +241,8 @@ pub struct SoundApp {
     /// Transport simulation when there is no player (tests, offscreen renders).
     sim: Option<(Samples, Option<Samples>, Option<Range>)>,
     pub quit_requested: bool,
+    /// Cut or Copy ran: a system clipboard without text gets some, so the desktop reports the next Cmd+V.
+    copied: bool,
     /// Reset floating-window positions next frame (Window › Arrange).
     pub arrange_request: bool,
     /// Tracks whose automation was touched during this pass (Touch/Latch writing).
@@ -297,6 +300,7 @@ impl SoundApp {
             docking_context: None,
             sim: None,
             quit_requested: false,
+            copied: false,
             arrange_request: false,
             touched: std::collections::HashSet::new(),
             last_write_at: i64::MIN,
@@ -325,6 +329,7 @@ impl SoundApp {
                 if id == "app.quit" {
                     self.quit_requested = true;
                 }
+                self.copied |= id.starts_with("edit.cut") || id.starts_with("edit.copy");
                 if id == "options.scrolling" {
                     // Re-selecting a scrolling mode resumes the playhead follow.
                     self.edit_layout.follow_hold = false;
@@ -779,6 +784,9 @@ impl SoundApp {
         self.last_frame = Some(now);
         self.frame_ms = self.frame_ms * 0.9 + dt * 1000.0 * 0.1;
         control::drain(self, ctx);
+        if std::mem::take(&mut self.copied) && self.services.clipboard_has_text.as_ref().is_some_and(|has_text| !has_text()) {
+            ctx.copy_text("SoundCraft".into());
+        }
         self.apply_editor_edits();
         if !ctx.input(|i| i.pointer.any_down()) {
             if matches!(self.gesture, Some(Gesture::Fader { .. })) {
