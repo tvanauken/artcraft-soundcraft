@@ -41,6 +41,19 @@ pub fn parse(s: &str) -> Option<(Modifiers, Key)> {
     key.map(|k| (m, k))
 }
 
+/// egui names the shifted symbol ("?" for Shift+/); shortcuts name the key under it.
+fn unshifted(key: Key) -> Key {
+    match key {
+        Key::Questionmark => Key::Slash,
+        Key::Colon => Key::Semicolon,
+        Key::Pipe => Key::Backslash,
+        Key::OpenCurlyBracket => Key::OpenBracket,
+        Key::CloseCurlyBracket => Key::CloseBracket,
+        Key::Exclamationmark => Key::Num1,
+        k => k,
+    }
+}
+
 /// Whether the held modifiers `got` fire a shortcut that asks for `want`.
 fn mods_match(want: Modifiers, got: Modifiers, mac: bool) -> bool {
     // Off macOS egui reports Ctrl as both `ctrl` and `command`: Ctrl is the shortcut's Cmd, and a shortcut's
@@ -64,7 +77,9 @@ pub fn handle(app: &mut SoundApp, ctx: &egui::Context) {
         i.events
             .iter()
             .filter_map(|e| match e {
-                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => Some((*key, *modifiers)),
+                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => {
+                    Some((if modifiers.shift { unshifted(*key) } else { *key }, *modifiers))
+                }
                 egui::Event::Cut => clipboard(Key::X),
                 egui::Event::Copy => clipboard(Key::C),
                 egui::Event::Paste(_) => clipboard(Key::V),
