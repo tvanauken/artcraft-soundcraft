@@ -390,7 +390,7 @@ impl Player {
         let (tx, rx) = channel();
         let want = session.sample_rate.hz();
         let want_ch = u16::try_from(main_channels(&session)).unwrap_or(2);
-        match open_device(want, want_ch) {
+        match open_device(want, want_ch, requested_buffer(&session)) {
             Ok((device, config, name)) => {
                 let rate = config.sample_rate.0;
                 let channels = usize::from(config.channels);
@@ -691,7 +691,16 @@ fn fold_gains(s: &Session) -> [(f32, f32); MAX_CHANNELS] {
 
 /// Open the default output device: f32 at the session rate if possible, with as many channels as
 /// it offers up to `want_ch` (at least stereo when available).
-fn open_device(want_rate: u32, want_ch: u16) -> Result<(cpal::Device, cpal::StreamConfig, String), String> {
+/// Saved buffer preference. Zero/missing means the driver's default.
+pub fn requested_buffer(s: &Session) -> Option<u32> {
+    let n = s.edit.value("engine.buffer_size", 0.0);
+    if !n.is_finite() || n <= 0.0 {
+        return None;
+    }
+    Some((n.clamp(16.0, 8192.0) as u32).next_power_of_two().min(8192))
+}
+
+fn open_device(want_rate: u32, want_ch: u16, buffer: Option<u32>) -> Result<(cpal::Device, cpal::StreamConfig, String), String> {
     use cpal::traits::{DeviceTrait, HostTrait};
     let host = cpal::default_host();
     let device = host.default_output_device().ok_or_else(|| "no default output device".to_string())?;
@@ -713,7 +722,7 @@ fn open_device(want_rate: u32, want_ch: u16) -> Result<(cpal::Device, cpal::Stre
             }
         }
     }
-    let config = match chosen {
+    let mut config = match chosen {
         Some(c) => c,
         None => {
             let d = device.default_output_config().map_err(|e| e.to_string())?;
@@ -723,12 +732,23 @@ fn open_device(want_rate: u32, want_ch: u16) -> Result<(cpal::Device, cpal::Stre
             d.config()
         }
     };
+    config.buffer_size = buffer.map_or(cpal::BufferSize::Default, cpal::BufferSize::Fixed);
     Ok((device, config, name))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requested_buffer_uses_default_for_zero_and_sanitizes_values() {
+        let mut s = Session::default();
+        assert_eq!(requested_buffer(&s), None);
+        s.edit.values.insert("engine.buffer_size".into(), 300.0);
+        assert_eq!(requested_buffer(&s), Some(512));
+        s.edit.values.insert("engine.buffer_size".into(), f64::NAN);
+        assert_eq!(requested_buffer(&s), None);
+    }
 
     #[test]
     fn audio_state_plays_and_stops_at_end() {
