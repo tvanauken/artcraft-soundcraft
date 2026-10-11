@@ -137,6 +137,7 @@ fn save_prefs(ui: &UiState) {
 
 fn services() -> Services {
     Services {
+        clipboard_has_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).is_ok_and(|t| !t.is_empty()))),
         pick_open: Some(Box::new(|purpose: &str, _exts: &[&str]| {
             let d = rfd::FileDialog::new();
             let d = match purpose {
