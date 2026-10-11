@@ -110,6 +110,7 @@ pub struct Engine {
     pub path: Option<String>,
     /// Revision counter; bumps on every document change (UI caches key on it).
     pub revision: u64,
+    session_generation: u64,
     dirty: bool,
     /// Gesture key for undo coalescing (see `execute_merged`).
     merge_key: Option<String>,
@@ -137,6 +138,7 @@ impl Engine {
             journal: Vec::new(),
             path: None,
             revision: 1,
+            session_generation: 0,
             dirty: false,
             merge_key: None,
             messages: Vec::new(),
@@ -151,6 +153,11 @@ impl Engine {
         Arc::clone(&self.doc)
     }
 
+    /// Changes only when the whole document is replaced (open / new).
+    pub fn session_generation(&self) -> u64 {
+        self.session_generation
+    }
+
     /// Mutable access (copy-on-write). Callers outside commands should prefer `execute`.
     pub fn session_mut(&mut self) -> &mut Session {
         self.revision = self.revision.wrapping_add(1);
@@ -163,6 +170,7 @@ impl Engine {
         self.transport = TransportStatus { position: s.edit.selection.start.max(0), ..TransportStatus::default() };
         self.transport_requests.clear();
         self.transport_requests.push(TransportRequest::ResetSession);
+        self.session_generation = self.session_generation.wrapping_add(1);
         self.doc = Arc::new(s);
         self.undo.clear();
         self.redo.clear();
@@ -240,6 +248,7 @@ impl Engine {
         let before = Arc::clone(&self.doc);
         let rev = self.revision;
         let dirty = self.dirty;
+        let generation = self.session_generation;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, params)));
         let result = match result {
             Ok(r) => r,
@@ -249,6 +258,7 @@ impl Engine {
                 self.doc = before;
                 self.revision = rev.wrapping_add(1);
                 self.dirty = dirty;
+                self.session_generation = generation;
                 return Err(EngineError::Internal(id.to_string(), msg));
             }
         };
@@ -263,6 +273,7 @@ impl Engine {
                 Ok(v)
             }
             Err(e) => {
+                self.session_generation = generation;
                 // Commands must not leave half-applied edits behind.
                 if !Arc::ptr_eq(&before, &self.doc) {
                     self.doc = before;
@@ -332,6 +343,20 @@ fn install_panic_hook() {
 #[cfg(test)]
 mod merge_tests {
     use super::*;
+
+    #[test]
+    fn session_generation_changes_only_for_document_replacement() {
+        let mut e = Engine::default();
+        let generation = e.session_generation();
+        e.execute("track.new", &json!({})).unwrap();
+        assert_eq!(e.session_generation(), generation);
+        assert!(e.undo());
+        assert_eq!(e.session_generation(), generation);
+        e.execute("session.new", &json!({})).unwrap();
+        assert_eq!(e.session_generation(), generation + 1);
+        e.replace_session(Session::default());
+        assert_eq!(e.session_generation(), generation + 2);
+    }
 
     #[test]
     fn merged_gesture_is_one_undo_step() {

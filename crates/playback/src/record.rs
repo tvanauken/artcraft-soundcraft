@@ -44,43 +44,23 @@ impl Recorder {
         #[allow(deprecated)]
         let name = device.name().unwrap_or_else(|_| "Input".into());
         let cfg = device.default_input_config().map_err(|e| e.to_string())?;
-        if cfg.sample_format() != cpal::SampleFormat::F32 {
-            return Err(format!("unsupported input sample format {:?}", cfg.sample_format()));
-        }
         let config = cfg.config();
         let shared = Arc::new(Shared { armed: AtomicBool::new(false), data: Mutex::new(Vec::new()) });
-        let sh = Arc::clone(&shared);
         let monitor = InputRing::new(usize::from(config.channels), config.sample_rate.0);
-        let mon = Arc::clone(&monitor);
-        let mut backlog: Vec<f32> = Vec::new();
-        let stream = device
-            .build_input_stream(
-                &config,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    crate::mark_audio_thread();
-                    mon.push(data);
-                    if !sh.armed.load(Ordering::Relaxed) {
-                        backlog.clear();
-                        return;
-                    }
-                    if let Ok(mut d) = sh.data.try_lock() {
-                        if d.len() < MAX_SAMPLES {
-                            d.extend_from_slice(&backlog);
-                            d.extend_from_slice(data);
-                        }
-                        backlog.clear();
-                    } else if backlog.len() < 1 << 20 {
-                        backlog.extend_from_slice(data);
-                    }
-                },
-                |e| {
-                    // Possibly the audio thread (see `crate::mark_audio_thread`).
-                    crate::mark_audio_thread();
-                    log::warn!("input stream error: {e}");
-                },
-                None,
-            )
-            .map_err(|e| e.to_string())?;
+        let stream = match cfg.sample_format() {
+            cpal::SampleFormat::I8 => input_stream::<i8>(&device, &config, &shared, &monitor),
+            cpal::SampleFormat::I16 => input_stream::<i16>(&device, &config, &shared, &monitor),
+            cpal::SampleFormat::I24 => input_stream::<cpal::I24>(&device, &config, &shared, &monitor),
+            cpal::SampleFormat::I32 => input_stream::<i32>(&device, &config, &shared, &monitor),
+            cpal::SampleFormat::I64 => input_stream::<i64>(&device, &config, &shared, &monitor),
+            cpal::SampleFormat::U8 => input_stream::<u8>(&device, &config, &shared, &monitor),
+            cpal::SampleFormat::U16 => input_stream::<u16>(&device, &config, &shared, &monitor),
+            cpal::SampleFormat::U32 => input_stream::<u32>(&device, &config, &shared, &monitor),
+            cpal::SampleFormat::U64 => input_stream::<u64>(&device, &config, &shared, &monitor),
+            cpal::SampleFormat::F32 => input_stream::<f32>(&device, &config, &shared, &monitor),
+            cpal::SampleFormat::F64 => input_stream::<f64>(&device, &config, &shared, &monitor),
+            format => return Err(format!("unsupported input sample format {format:?}")),
+        }?;
         stream.play().map_err(|e| e.to_string())?;
         Ok(Recorder {
             monitor,
@@ -120,6 +100,54 @@ impl Recorder {
     }
 }
 
+#[cfg(not(target_os = "freebsd"))]
+fn input_stream<T>(device: &cpal::Device, config: &cpal::StreamConfig, shared: &Arc<Shared>, monitor: &Arc<InputRing>) -> Result<cpal::Stream, String>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    use cpal::traits::DeviceTrait;
+    let shared = Arc::clone(shared);
+    let monitor = Arc::clone(monitor);
+    let mut backlog: Vec<f32> = Vec::new();
+    device
+        .build_input_stream(
+            config,
+            move |data: &[T], _: &cpal::InputCallbackInfo| {
+                crate::mark_audio_thread();
+                monitor.push_samples(data.iter().copied().map(input_sample));
+                if !shared.armed.load(Ordering::Relaxed) {
+                    backlog.clear();
+                    return;
+                }
+                if let Ok(mut d) = shared.data.try_lock() {
+                    if d.len() < MAX_SAMPLES {
+                        d.extend_from_slice(&backlog);
+                        d.extend(data.iter().copied().map(input_sample));
+                    }
+                    backlog.clear();
+                } else if backlog.len() < 1 << 20 {
+                    backlog.extend(data.iter().copied().map(input_sample));
+                }
+            },
+            |e| {
+                crate::mark_audio_thread();
+                log::warn!("input stream error: {e}");
+            },
+            None,
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "freebsd"))]
+fn input_sample<T: cpal::Sample>(sample: T) -> f32
+where
+    f32: cpal::FromSample<T>,
+{
+    let value = sample.to_sample::<f32>();
+    if value.is_finite() { value } else { 0.0 }
+}
+
 pub fn deinterleave(data: &[f32], channels: usize, sample_rate: u32) -> Take {
     let ch = channels.max(1);
     let frames = data.len() / ch;
@@ -136,6 +164,31 @@ pub fn deinterleave(data: &[f32], channels: usize, sample_rate: u32) -> Take {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_os = "freebsd"))]
+    #[test]
+    fn converts_pcm_samples_for_recording_and_monitoring() {
+        use super::{InputRing, deinterleave, input_sample};
+        assert_eq!(input_sample(i16::MIN), -1.0);
+        assert_eq!(input_sample(0i16), 0.0);
+        assert_eq!(input_sample(16_384i16), 0.5);
+        assert!(input_sample(i16::MAX) < 1.0);
+        assert_eq!(input_sample(i32::MIN), -1.0);
+        assert_eq!(input_sample(0u16), -1.0);
+        assert_eq!(input_sample(32_768u16), 0.0);
+        assert_eq!(input_sample(128u8), 0.0);
+        assert_eq!(input_sample(0.25f64), 0.25);
+        assert_eq!(input_sample(f64::NAN), 0.0);
+        let samples = [0i16, 16_384, i16::MIN, 0, 8_192, -8_192];
+        let converted: Vec<_> = samples.into_iter().map(input_sample).collect();
+        let take = deinterleave(&converted, 2, 48_000);
+        assert_eq!(take.channels, vec![vec![0.0, -1.0, 0.25], vec![0.5, 0.0, -0.25]]);
+        let ring = InputRing::new(2, 48_000);
+        ring.push_samples(samples.into_iter().map(input_sample));
+        let mut out = vec![vec![0.0; 2]; 2];
+        ring.pop_into(&mut out, 2, 48_000);
+        assert_eq!(out, vec![vec![0.0, -1.0], vec![0.5, 0.0]]);
+    }
+
     #[test]
     fn deinterleaves() {
         let t = super::deinterleave(&[1.0, 2.0, 3.0, 4.0, 5.0], 2, 48_000);
@@ -178,8 +231,12 @@ impl InputRing {
     }
 
     pub fn push(&self, samples: &[f32]) {
+        self.push_samples(samples.iter().copied());
+    }
+
+    fn push_samples(&self, samples: impl Iterator<Item = f32>) {
         if let Ok(mut s) = self.state.try_lock() {
-            s.data.extend(samples.iter().copied());
+            s.data.extend(samples);
             while s.data.len() > self.cap {
                 s.data.pop_front();
             }
