@@ -329,6 +329,9 @@ impl SoundApp {
                     // Re-selecting a scrolling mode resumes the playhead follow.
                     self.edit_layout.follow_hold = false;
                 }
+                if id == "track.clear_clip_indicators" {
+                    self.meters.values_mut().chain([&mut self.main_meter]).for_each(|m| m.clip = false);
+                }
                 Ok(v)
             }
             Err(e) => {
@@ -510,6 +513,12 @@ impl SoundApp {
             }
         }
         best.map(|(_, p)| p)
+    }
+
+    /// Whether the meters are live: while playing, and while armed or input-monitored tracks are heard.
+    fn meters_live(&self) -> bool {
+        self.engine.transport.playing
+            || (self.recorder.is_some() && self.engine.session().tracks.iter().any(|t| t.mixer.input_monitor || t.mixer.record_arm))
     }
 
     /// Open the input device once (for recording and input monitoring) and feed the player.
@@ -749,7 +758,7 @@ impl SoundApp {
                 self.stop_play();
             }
         }
-        if !self.engine.transport.playing {
+        if !self.meters_live() {
             for d in self.meters.values_mut() {
                 feed_meter(d, [0.0, 0.0], 0.0, dt);
             }
@@ -805,7 +814,7 @@ impl SoundApp {
         {
             self.ensure_input();
         }
-        if self.is_playing() || self.meters.values().any(|m| m.level[0] > 0.0001) || !self.pending_shots.is_empty() || !self.synthetic.is_empty() {
+        if self.meters_live() || self.meters.values().any(|m| m.level[0] > 0.0001) || !self.pending_shots.is_empty() || !self.synthetic.is_empty() {
             ctx.request_repaint();
         }
         control::collect_screenshots(self, ctx);
@@ -977,6 +986,16 @@ mod tests {
         assert_eq!(app.position(), selection.start);
         assert_eq!(app.engine.session().edit.zoom.scroll, 0);
         assert!(!app.engine.is_dirty());
+    }
+
+    #[test]
+    fn clear_all_clip_indicators_clears_every_meter() {
+        let mut app = SoundApp::new(soundcraft_engine::demo::demo_engine(), None, Services::default());
+        let kick = app.engine.session().track_by_name("Kick").unwrap().id;
+        app.meters.entry(kick).or_default().clip = true;
+        app.main_meter.clip = true;
+        app.run("track.clear_clip_indicators", json!({})).unwrap();
+        assert!(!app.meters[&kick].clip && !app.main_meter.clip);
     }
 
     #[test]
