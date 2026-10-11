@@ -121,13 +121,13 @@ impl Coeffs {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Biquad {
     pub coeffs: Coeffs,
-    z1: f32,
-    z2: f32,
+    input_history: [f32; 2],
+    output_history: [f32; 2],
 }
 
 impl Biquad {
     pub fn new(coeffs: Coeffs) -> Self {
-        Self { coeffs, z1: 0.0, z2: 0.0 }
+        Self { coeffs, input_history: [0.0; 2], output_history: [0.0; 2] }
     }
 
     /// Designs a new filter (see [`Coeffs::design`]).
@@ -141,16 +141,19 @@ impl Biquad {
     }
 
     pub fn reset(&mut self) {
-        self.z1 = 0.0;
-        self.z2 = 0.0;
+        self.input_history = [0.0; 2];
+        self.output_history = [0.0; 2];
     }
 
     #[inline]
     pub fn process_sample(&mut self, x: f32) -> f32 {
         let c = &self.coeffs;
-        let y = c.b0 * x + self.z1;
-        self.z1 = flush(c.b1 * x - c.a1 * y + self.z2);
-        self.z2 = flush(c.b2 * x - c.a2 * y);
+        let y =
+            c.b0 * x + c.b1 * self.input_history[1] + c.b2 * self.input_history[0] - c.a1 * self.output_history[1] - c.a2 * self.output_history[0];
+        self.input_history[0] = self.input_history[1];
+        self.input_history[1] = flush(x);
+        self.output_history[0] = self.output_history[1];
+        self.output_history[1] = flush(y);
         if y.is_finite() {
             y
         } else {
@@ -160,9 +163,8 @@ impl Biquad {
     }
 
     pub fn process_block(&mut self, buf: &mut [f32]) {
-        for s in buf {
-            *s = self.process_sample(*s);
-        }
+        let c = self.coeffs;
+        soundcraft_accelerate::biquad(buf, [c.b0, c.b1, c.b2, c.a1, c.a2], &mut self.input_history, &mut self.output_history);
     }
 
     /// Magnitude response in dB at `freq` Hz, for drawing curves.

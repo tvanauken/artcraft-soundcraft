@@ -270,13 +270,10 @@ impl<const S: usize> Plugin for Eq<S> {
             }
             for (buf, f) in io.iter_mut().zip(self.filt.iter_mut()) {
                 let Some(seg) = buf.get_mut(pos..pos + n) else { continue };
-                for (x, g) in seg.iter_mut().zip(&gains) {
-                    let mut y = *x;
-                    for b in f.iter_mut() {
-                        y = b.process_sample(y);
-                    }
-                    *x = y * g;
+                for b in f.iter_mut() {
+                    b.process_block(seg);
                 }
+                soundcraft_accelerate::multiply(seg, &gains[..n]);
             }
             pos += n;
         }
