@@ -69,13 +69,15 @@ pub fn specs() -> Vec<CommandSpec> {
         )),
         cmd!("track.pin", "Pin Track", [], None, "{tracks?}", has_selection, |e, p| flag(e, p, "track.pin", |t, v| t.pinned = v, |t| t.pinned)),
         cmd!("track.move", "Move Track", [], None, "{track, to: index}", has_tracks, move_track),
-        cmd!("track.freeze", "Freeze", ["Track"], None, "{tracks?}", has_selection, |e, p| flag(
-            e,
-            p,
+        cmd!(
             "track.freeze",
-            |t, v| t.frozen = v,
-            |t| t.frozen
-        )),
+            "Freeze",
+            ["Track"],
+            None,
+            "{tracks?, frozen?: bool} — renders/unrenders tracks, auxes and routing folders",
+            has_selection,
+            freeze
+        ),
         cmd!("track.commit", "Commit...", ["Track"], Some("Alt+Shift+C"), "{tracks?}", has_selection, commit),
         cmd!("track.bounce", "Bounce...", ["Track"], Some("Cmd+Alt+Shift+B"), "{tracks?}", has_selection, commit),
         cmd!("track.bypass_inserts", "All", ["Track", "Bypass Inserts"], None, "{tracks?, bypass?: bool}", has_selection, bypass_inserts),
@@ -385,6 +387,70 @@ fn flag(
     Ok(json!({"value": target, "tracks": tracks}))
 }
 
+fn freeze(e: &mut Engine, p: &Value) -> Result<Value> {
+    let tracks = tracks_required(e, "track.freeze", p)?;
+    let target = p
+        .get("frozen")
+        .or_else(|| p.get("value"))
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| !tracks.iter().all(|id| e.session().track(*id).is_some_and(|t| t.frozen)));
+    let mut changed = 0;
+    for id in tracks {
+        if target {
+            let Some(track) = e.session().track(id) else { continue };
+            if track.frozen || !matches!(track.kind, TrackKind::Audio | TrackKind::Instrument | TrackKind::Aux | TrackKind::Folder) {
+                continue;
+            }
+            let end = if matches!(track.kind, TrackKind::Aux | TrackKind::Folder) {
+                e.session().content_end()
+            } else {
+                track.clips().iter().map(soundcraft_model::Clip::end).max().unwrap_or(0)
+            };
+            if end <= 0 {
+                continue;
+            }
+            let range = soundcraft_time::Range::new(0, end.saturating_add(e.session().sample_rate.samples(2.0)));
+            let audio = soundcraft_mix::render_track_pre_fader(e.session(), id, range);
+            if audio.is_empty() {
+                continue;
+            }
+            let name = format!("{}_freeze", track.name);
+            let rate = e.session().sample_rate.hz();
+            let source = crate::io::add_source(
+                e.session_mut(),
+                &name,
+                soundcraft_audio_io::AudioBuffer { sample_rate: rate, channels: audio },
+                None,
+                soundcraft_audio_io::FileFormat::Wav,
+            );
+            if let Some(track) = e.session_mut().track_mut(id) {
+                track.frozen = true;
+                track.frozen_source = Some(source);
+                track.frozen_start = range.start;
+                track.frozen_len = range.len();
+                changed += 1;
+            }
+        } else {
+            let source = e.session().track(id).filter(|track| track.frozen).and_then(|track| track.frozen_source);
+            if let Some(track) = e.session_mut().track_mut(id)
+                && track.frozen
+            {
+                track.frozen = false;
+                track.frozen_source = None;
+                track.frozen_start = 0;
+                track.frozen_len = 0;
+                changed += 1;
+            }
+            if let Some(source) = source {
+                let s = e.session_mut();
+                s.sources.retain(|candidate| candidate.id != source);
+                s.pool.remove(source);
+            }
+        }
+    }
+    Ok(json!({"frozen": target, "tracks": changed}))
+}
+
 fn move_to_folder(e: &mut Engine, p: &Value) -> Result<Value> {
     let tracks = tracks_required(e, "track.move_to_new_folder", p)?;
     let name = str_param(p, "name").map(str::to_string);
@@ -679,5 +745,32 @@ mod tests {
         let kick = s.track_by_name("Kick").unwrap();
         assert!(matches!(kick.mixer.output, Route::Bus(_)));
         assert!(s.tracks.iter().any(|t| t.kind == TrackKind::Folder && t.mixer.input == kick.mixer.output));
+    }
+
+    #[test]
+    fn freeze_renders_audio_and_unfreeze_restores_live_processing() {
+        let mut e = crate::demo::demo_engine();
+        let kick = e.session().track_by_name("Kick").unwrap().id;
+        e.execute("track.freeze", &json!({"tracks": [kick.0], "frozen": true})).unwrap();
+        let frozen = e.session().track(kick).unwrap();
+        let source = frozen.frozen_source.unwrap();
+        assert!(frozen.frozen && frozen.frozen_len > 0);
+        assert!(e.session().pool.get(source).is_some_and(|audio| audio.buffer.channels.iter().flatten().any(|x| x.abs() > 1e-5)));
+        e.execute("track.freeze", &json!({"tracks": [kick.0], "frozen": false})).unwrap();
+        let live = e.session().track(kick).unwrap();
+        assert!(!live.frozen && live.frozen_source.is_none());
+        assert!(e.session().pool.get(source).is_none());
+    }
+
+    #[test]
+    fn freeze_aux_prints_its_upstream_bus() {
+        let mut e = crate::demo::demo_engine();
+        let aux = e.session().tracks.iter().find(|t| matches!(t.kind, TrackKind::Aux | TrackKind::Folder)).map(|t| t.id).unwrap();
+        e.execute("track.freeze", &json!({"tracks": [aux.0], "frozen": true})).unwrap();
+        let frozen = e.session().track(aux).unwrap();
+        let source = frozen.frozen_source.unwrap();
+        assert!(e.session().pool.get(source).is_some_and(|audio| {
+            !audio.buffer.channels.is_empty() && audio.buffer.channels.iter().all(|channel| channel.len() == frozen.frozen_len as usize)
+        }));
     }
 }
