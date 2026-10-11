@@ -247,6 +247,8 @@ pub struct SoundApp {
     last_write_at: Samples,
     pub frame_ms: f32,
     last_frame: Option<f64>,
+    /// Original mixing buffer while recording temporarily uses the low-latency buffer.
+    mix_buffer_before_record: Option<f64>,
     /// Movies for the Video window and Video track (decoded in the background).
     pub video: video_track::VideoPool,
 }
@@ -302,6 +304,7 @@ impl SoundApp {
             last_write_at: i64::MIN,
             frame_ms: 0.0,
             last_frame: None,
+            mix_buffer_before_record: None,
             video: video_track::VideoPool::default(),
         }
     }
@@ -415,10 +418,24 @@ impl SoundApp {
             self.ui.status = "Cannot record: no audio input device".into();
             return;
         }
+        let already_playing = self.is_playing();
+        if !already_playing && self.engine.session().edit.flag("options.low_latency_monitoring") {
+            let mix = self.engine.session().edit.value("engine.buffer_size", 0.0);
+            let record = self.engine.session().edit.value("engine.record_buffer_size", 128.0).clamp(32.0, 512.0);
+            let mut low = self.engine.session().clone();
+            low.edit.values.insert("engine.buffer_size".into(), record);
+            let next = soundcraft_playback::Player::new(std::sync::Arc::new(low));
+            if !next.silent {
+                if let Some(r) = &self.recorder {
+                    next.set_input(std::sync::Arc::clone(&r.monitor));
+                }
+                self.player = Some(next);
+                self.mix_buffer_before_record = Some(mix);
+            }
+        }
         if let Some(p) = &self.player {
             p.set_recording(true);
         }
-        let already_playing = self.is_playing();
         if let Some(r) = &self.recorder {
             r.arm();
         }
@@ -535,6 +552,15 @@ impl SoundApp {
         self.engine.transport.recording = false;
         if let Some(p) = &self.player {
             p.set_recording(false);
+        }
+        if self.mix_buffer_before_record.take().is_some() {
+            let next = soundcraft_playback::Player::new(self.engine.session_arc());
+            if !next.silent {
+                if let Some(r) = &self.recorder {
+                    next.set_input(std::sync::Arc::clone(&r.monitor));
+                }
+                self.player = Some(next);
+            }
         }
         let Some(r) = &self.recorder else { return };
         let take = r.take();

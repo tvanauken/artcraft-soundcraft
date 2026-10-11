@@ -589,7 +589,8 @@ impl MixEngine {
         self.busses = busses;
         // Delay compensation: align every strip to the slowest; direct-to-main outputs also wait
         // for the slowest aux return (aux latencies are from the previous block; they are stable).
-        let pdc = s.edit.delay_compensation;
+        let low_latency = self.recording && s.edit.flag("options.low_latency_monitoring");
+        let pdc = s.edit.delay_compensation && !low_latency;
         let lmax_t = if pdc { work.iter().map(|(_, st)| st.latency).max().unwrap_or(0) } else { 0 };
         let lmax_a =
             if pdc { self.strips.iter().filter(|(id, _)| s.track(**id).is_some_and(is_aux)).map(|(_, st)| st.latency).max().unwrap_or(0) } else { 0 };
@@ -852,7 +853,11 @@ fn process_strip(
     }
     let mut gr = 0.0f32;
     let mut latency = 0usize;
+    let skip_plugins = live.recording && s.edit.flag("options.low_latency_monitoring") && (t.mixer.record_arm || t.mixer.input_monitor);
     for (i, ins) in t.mixer.inserts.iter().enumerate() {
+        if skip_plugins {
+            break;
+        }
         let (Some(ins), Some(Some(slot))) = (ins, strip.plugins.get_mut(i)) else { continue };
         if !ins.active || ins.bypass {
             continue;
@@ -2055,6 +2060,21 @@ mod tests {
         s.edit.delay_compensation = false;
         let out = render_range(&s, Range::new(0, 8000), 512);
         assert_ne!(argmax(&out[0]), argmax(&out[1]));
+    }
+
+    #[test]
+    fn low_latency_recording_bypasses_plugins_on_armed_tracks() {
+        let (mut s, t) = session_with_dc(0.5, 4800);
+        let mut gain = Insert::new("gain");
+        gain.params.insert("gain".into(), -12.0);
+        let track = s.track_mut(t).unwrap();
+        track.mixer.inserts[0] = Some(gain);
+        track.mixer.record_arm = true;
+
+        let normal = render_playback(&s, 4800, 512, true);
+        s.edit.set_flag("options.low_latency_monitoring", true);
+        let low = render_playback(&s, 4800, 512, true);
+        assert!(low[0][4000].abs() > normal[0][4000].abs() * 2.0, "{} vs {}", low[0][4000], normal[0][4000]);
     }
 
     #[test]
