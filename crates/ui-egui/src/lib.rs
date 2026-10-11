@@ -19,6 +19,7 @@ pub mod ops_windows;
 pub mod palette;
 pub mod panels;
 pub mod score_editor;
+pub mod shortcut_editor;
 pub mod shortcuts;
 pub mod theme;
 pub mod toolbar;
@@ -101,6 +102,8 @@ pub struct UiState {
     pub configurations: Vec<(String, Value)>,
     /// Appearance (`ui.theme`): dark by default, light or follow the system on request.
     pub theme: theme::ThemeMode,
+    /// Shortcuts people chose in Setup › Keyboard Shortcuts (`ui.shortcuts`).
+    pub shortcuts: shortcuts::Custom,
 }
 
 impl Default for UiState {
@@ -153,6 +156,7 @@ impl Default for UiState {
             workspace_dir: String::new(),
             configurations: Vec::new(),
             theme: theme::ThemeMode::Dark,
+            shortcuts: shortcuts::Custom::new(),
         }
     }
 }
@@ -227,6 +231,7 @@ pub struct SoundApp {
     pub ops: ops_windows::OpsState,
     pub extra: extra_windows::ExtraState,
     pub palette: palette::PaletteState,
+    pub shortcut_editor: shortcut_editor::ShortcutEditor,
     pub synthetic: Vec<egui::Event>,
     synthetic_grace: u32,
     control_rx: Option<Receiver<ControlRequest>>,
@@ -289,6 +294,7 @@ impl SoundApp {
             ops: ops_windows::OpsState::default(),
             extra: extra_windows::ExtraState::default(),
             palette: palette::PaletteState::default(),
+            shortcut_editor: shortcut_editor::ShortcutEditor::default(),
             synthetic: Vec::new(),
             synthetic_grace: 0,
             control_rx: None,

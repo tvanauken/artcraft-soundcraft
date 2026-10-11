@@ -20,7 +20,7 @@ pub fn show(app: &mut SoundApp, ctx: &egui::Context) {
     configurations(app, ctx);
     playback_engine(app, ctx);
     io_setup(app, ctx);
-    shortcuts_window(app, ctx);
+    crate::shortcut_editor::show(app, ctx);
     clip_effects(app, ctx);
 }
 
@@ -388,6 +388,7 @@ fn configurations(app: &mut SoundApp, ctx: &egui::Context) {
                     } else {
                         st.configurations = app.ui.configurations.clone();
                         st.theme = app.ui.theme;
+                        st.shortcuts = app.ui.shortcuts.clone();
                         st.show_configurations = true;
                         crate::docking::cancel_replaced_state(app, &st);
                         app.ui = st;
@@ -484,25 +485,6 @@ pub fn io_setup(app: &mut SoundApp, ctx: &egui::Context) {
         }
     });
     app.ui.show_io_setup = open;
-}
-
-/// Setup › Keyboard Shortcuts.
-pub fn shortcuts_window(app: &mut SoundApp, ctx: &egui::Context) {
-    let mut open = app.ui.show_shortcuts;
-    let mac = ctx.os().is_mac();
-    win(ctx, &mut open, "Keyboard Shortcuts", vec2(520.0, 480.0), |ui| {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("sc").num_columns(3).striped(true).show(ui, |ui| {
-                for c in soundcraft_engine::command_specs().iter().filter(|c| c.shortcut.is_some()) {
-                    ui.label(egui::RichText::new(crate::shortcuts::shortcut_label(c.shortcut.unwrap_or(""), mac)).font(mono(11.0)));
-                    ui.label(c.label);
-                    ui.label(egui::RichText::new(c.menu.join(" › ")).small());
-                    ui.end_row();
-                }
-            });
-        });
-    });
-    app.ui.show_shortcuts = open;
 }
 
 /// Clip Effects: per-clip EQ, dynamics and gain (stored as `clip_fx.<clip>.*` values).

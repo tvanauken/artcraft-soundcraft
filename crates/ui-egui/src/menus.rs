@@ -71,6 +71,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, Option<&str>)] = &[
     ("ui.bounce_dialog", "Bounce Mix…", "", None),
     ("ui.set", "Set UI State", "", None),
     ("ui.theme", "Appearance", "", None),
+    ("ui.shortcuts", "Change Keyboard Shortcuts", "", None),
 ];
 
 /// Extra catalog mappings handled by the UI layer.
@@ -262,7 +263,7 @@ fn menu_node(app: &mut SoundApp, ui: &mut egui::Ui, n: &MenuNode, extra: &[(&str
     let id = command_for_path(&n.path, extra);
     let (enabled, checked) = item_state(app, &n.path, id.as_deref());
     let label = if checked { format!("✔ {}", n.label) } else { n.label.clone() };
-    let shortcut = id.as_deref().and_then(soundcraft_engine::find_command).and_then(|c| c.shortcut).unwrap_or("");
+    let shortcut = id.as_deref().and_then(|id| crate::shortcuts::shortcut_for(&app.ui.shortcuts, id)).unwrap_or("");
     let btn = egui::Button::new(label).shortcut_text(crate::shortcuts::shortcut_label(shortcut, ui.ctx().os().is_mac()));
     if ui.add_enabled(enabled, btn).clicked()
         && let Some(id) = id
@@ -359,7 +360,7 @@ fn mix_section_id(label: &str) -> &'static str {
 }
 
 /// Parameters implied by the menu item a command was reached through.
-fn params_for(path: &str, id: &str) -> Value {
+pub(crate) fn params_for(path: &str, id: &str) -> Value {
     let leaf = path.rsplit(" > ").next().unwrap_or("");
     match id {
         "view.ruler" => json!({"ruler": ruler_id(leaf)}),
@@ -576,6 +577,7 @@ pub fn run_ui_command(app: &mut SoundApp, id: &str, p: &Value) -> Option<Result<
             app.ui.theme = mode;
             json!({"mode": mode.id()})
         }
+        "ui.shortcuts" => return Some(crate::shortcuts::configure(&mut app.ui.shortcuts, p)),
         "ui.set" => match serde_json::to_value(&app.ui) {
             Ok(mut cur) => {
                 if let (Some(obj), Some(patch)) = (cur.as_object_mut(), p.as_object()) {
