@@ -26,6 +26,7 @@ mod plugin_state;
 mod query;
 mod setup_more;
 mod surround;
+mod tag;
 mod track;
 mod track_more;
 mod transport;
@@ -124,6 +125,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(plugin_state::specs());
         v.extend(instrument::specs());
         v.extend(video::specs());
+        v.extend(tag::specs());
         v
     })
 }
