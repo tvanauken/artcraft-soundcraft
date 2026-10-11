@@ -583,11 +583,16 @@ pub fn add_recording(e: &mut Engine, start: Samples, channels: Vec<Vec<f32>>, ra
     if armed.is_empty() {
         return Err(EngineError::BadParams("record".into(), "no tracks are record-enabled".into()));
     }
+    for (_, first, n, name) in &armed {
+        if first.checked_add(*n).is_none_or(|end| end > channels.len()) {
+            return Err(EngineError::BadParams("record".into(), format!("{name}: selected input channels are unavailable")));
+        }
+    }
     let before = e.session_arc();
     let mut out = Vec::new();
     let take_no = e.session().sources.len() + 1;
     for (tid, first, n, name) in armed {
-        let chans: Vec<Vec<f32>> = (0..n).map(|k| channels.get((first + k) % channels.len().max(1)).cloned().unwrap_or_default()).collect();
+        let chans: Vec<Vec<f32>> = (0..n).filter_map(|k| first.checked_add(k).and_then(|i| channels.get(i)).cloned()).collect();
         let buf = AudioBuffer { sample_rate: rate, channels: chans };
         let clip_name = format!("{name}_{take_no:02}");
         let s = e.session_mut();
@@ -604,6 +609,31 @@ pub fn add_recording(e: &mut Engine, start: Samples, channels: Vec<Vec<f32>>, ra
 #[cfg(test)]
 mod save_tests {
     use super::*;
+
+    #[test]
+    fn recording_rejects_unavailable_inputs_before_changing_the_session() {
+        let mut e = Engine::default();
+        let good = e.session_mut().add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Good"));
+        let bad = e.session_mut().add_track(TrackKind::Audio, ChannelFormat::Mono, Some("Bad"));
+        for t in [good, bad] {
+            e.session_mut().track_mut(t).unwrap().mixer.record_arm = true;
+        }
+        e.session_mut().track_mut(bad).unwrap().mixer.input = soundcraft_model::Route::Hardware("In 3".into());
+        let before = e.session_arc();
+        assert!(add_recording(&mut e, 0, vec![vec![0.25; 48], vec![0.5; 48]], 48_000).is_err());
+        assert!(Arc::ptr_eq(&before, &e.session_arc()));
+        assert!(!e.can_undo());
+        e.session_mut().track_mut(bad).unwrap().mixer.input = soundcraft_model::Route::Hardware("In 2".into());
+        let ids = add_recording(&mut e, 0, vec![vec![0.25; 48], vec![0.5; 48]], 48_000).unwrap();
+        assert_eq!(ids.len(), 2);
+        for (cid, expected) in ids.into_iter().zip([0.25, 0.5]) {
+            let (_, c) = e.session().find_clip(cid).unwrap();
+            let src = c.source().unwrap();
+            assert_eq!(e.session().pool.get(src).unwrap().buffer.channels[0], vec![expected; 48]);
+        }
+        assert!(e.undo());
+        assert!(e.session().sources.is_empty());
+    }
 
     #[test]
     fn autosave_copy_leaves_document_untouched_and_reuses_audio() {
